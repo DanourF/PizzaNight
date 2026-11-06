@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pizza Night</title>
+<style>
+:root{--bg:#2a1a14;--panel:#3a251c;--line:#5c3d2e;--text:#fff4e3;--muted:#d0b8a0;--amber:#ffc24b;--good:#58c97a;--bad:#ff6b5e}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.4 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif;display:flex;align-items:center;justify-content:center;overflow:hidden}
+svg#game{width:100%;height:100%;display:block;user-select:none}
+svg text{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
+#back{position:fixed;inset:0;background:#120a07c9;display:none;align-items:center;justify-content:center;padding:16px;z-index:2}
+#box{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:100%;max-width:560px;max-height:94vh;overflow:auto;padding:24px}
+#box h2{margin:0 0 10px;font-size:24px}
+#box p{margin:8px 0}
+#box table{width:100%;border-collapse:collapse;margin:8px 0}
+#box td{padding:4px 0;vertical-align:middle}
+#box td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+kbd{display:inline-block;min-width:24px;text-align:center;background:#fff4e3;color:#2a1a14;border-radius:5px;padding:1px 6px;font:700 13px "Segoe UI",system-ui,sans-serif;box-shadow:0 2px 0 #b89f85}
+.go{margin-top:14px;text-align:center;font-weight:700;color:var(--amber);font-size:17px}
+.off{opacity:.45}
+.price{color:var(--amber)}
+</style>
+</head>
+<body>
+<svg id="game" viewBox="0 0 1000 640" role="img" aria-label="Pizza kitchen"></svg>
+<div id="back"><div id="box" role="dialog" aria-modal="true" aria-live="polite"></div></div>
+
+<script>
+'use strict';
+const LEN=80,SLOTS=4,OVEN_KEYS=['q','w','e','r'];
+const DIFFS={
+  easy:{name:'Easy',patience:1.4,spawn:1.35,rent:.6,window:9,desc:'Patient customers, cheap rent, 9 seconds to grab a READY pizza, and seat numbers on pizzas'},
+  medium:{name:'Medium',patience:1,spawn:1,rent:1,window:6,desc:'The standard dinner rush, 6 seconds to grab a READY pizza, and seat numbers on pizzas through night 10'},
+  hard:{name:'Hard',patience:.8,spawn:.8,rent:1.2,window:4,desc:'Impatient crowds, high rent, only 4 seconds to grab a READY pizza, and no seat numbers'}
+};
+const DIFF_KEYS=['easy','medium','hard'];
+const NS='http://www.w3.org/2000/svg',$=id=>document.getElementById(id);
+const rand=(a,b)=>a+Math.random()*(b-a),pick=a=>a[Math.floor(Math.random()*a.length)];
+function el(tag,attrs,parent,text){
+  const e=document.createElementNS(NS,tag);
+  for(const k in attrs)e.setAttribute(k,attrs[k]);
+  if(text!==undefined)e.textContent=text;
+  if(parent)parent.appendChild(e);
+  return e;
+}
+function readBest(d){try{return +localStorage.getItem('pizzaNightBest_'+d)||0}catch(e){return 0}}
+function saveBest(d,v){try{localStorage.setItem('pizzaNightBest_'+d,v)}catch(e){}}
+
+/* ---------- Toppings ---------- */
+const TOPPINGS={
+  p:{name:'Pepperoni',night:1,draw(g,x,y,s){el('circle',{cx:x,cy:y,r:7*s,fill:'#b8321f',stroke:'#8d2213','stroke-width':1*s},g);el('circle',{cx:x-2*s,cy:y-2*s,r:1.3*s,fill:'#e0705c'},g)}},
+  m:{name:'Mushroom',night:1,draw(g,x,y,s){el('path',{d:`M${x-7*s} ${y}a${7*s} ${7*s} 0 0 1 ${14*s} 0z`,fill:'#d9c6ab',stroke:'#8a735a','stroke-width':1*s},g);el('rect',{x:x-2.5*s,y:y,width:5*s,height:6*s,rx:1.5*s,fill:'#efe3cf',stroke:'#8a735a','stroke-width':.8*s},g)}},
+  o:{name:'Olive',night:1,draw(g,x,y,s){el('circle',{cx:x,cy:y,r:5.5*s,fill:'none',stroke:'#26211f','stroke-width':3.5*s},g)}},
+  b:{name:'Basil',night:2,draw(g,x,y,s){el('ellipse',{cx:x,cy:y,rx:8*s,ry:4*s,fill:'#2f9346',stroke:'#1d6a2f','stroke-width':1*s,transform:`rotate(-30 ${x} ${y})`},g)}},
+  n:{name:'Onion',night:3,draw(g,x,y,s){el('circle',{cx:x,cy:y,r:6.5*s,fill:'none',stroke:'#a44aa8','stroke-width':2*s},g);el('circle',{cx:x,cy:y,r:3.2*s,fill:'none',stroke:'#c98ccb','stroke-width':1.3*s},g)}},
+  a:{name:'Pineapple',night:4,draw(g,x,y,s){el('path',{d:`M${x-7*s} ${y+5*s}L${x} ${y-7*s}L${x+7*s} ${y+5*s}z`,fill:'#f6cf3f',stroke:'#c49a12','stroke-width':1*s,'stroke-linejoin':'round'},g)}}
+};
+const TKEYS=Object.keys(TOPPINGS);
+
+function drawPizza(parent,cx,cy,r,toppings,state){
+  const g=el('g',{},parent);
+  const crust={raw:'#ecd9ad',baking:'#ecd9ad',ready:'#d9963f',burnt:'#2f2622'}[state];
+  const sauce={raw:'#c8452c',baking:'#c8452c',ready:'#b83c22',burnt:'#3a2a24'}[state];
+  const cheese={raw:'#fbecb6',baking:'#f9e49a',ready:'#f5c95a',burnt:'#4a3a2e'}[state];
+  el('circle',{cx,cy,r,fill:crust,stroke:'#00000030','stroke-width':2},g);
+  el('circle',{cx,cy,r:r*.87,fill:sauce},g);
+  el('circle',{cx,cy,r:r*.8,fill:cheese},g);
+  const list=[];
+  for(const k of TKEYS)for(let i=0;i<(toppings[k]||0);i++)for(let j=0;j<4;j++)list.push(k);
+  const N=Math.max(list.length,8),s=r/60;
+  list.forEach((k,i)=>{
+    const a=i*2.39996,d=r*.68*Math.sqrt((i+.5)/N);
+    if(state!=='burnt')TOPPINGS[k].draw(g,cx+Math.cos(a)*d,cy+Math.sin(a)*d,s);
+    else el('circle',{cx:cx+Math.cos(a)*d,cy:cy+Math.sin(a)*d,r:5*s,fill:'#16100e'},g);
+  });
+  return g;
+}
+function keycap(parent,x,y,label,w){
+  const width=w||26;
+  el('rect',{x,y:y+2,width,height:26,rx:5,fill:'#b89f85'},parent);
+  el('rect',{x,y,width,height:26,rx:5,fill:'#fff4e3'},parent);
+  el('text',{x:x+width/2,y:y+18,'text-anchor':'middle','font-size':14,'font-weight':700,fill:'#2a1a14'},parent,label);
+}
+
+/* ---------- Static scene ---------- */
+const svg=$('game');
+const bg=el('g',{},svg);
+el('rect',{x:0,y:0,width:1000,height:640,fill:'#4a2d21'},bg);
+el('rect',{x:0,y:0,width:1000,height:48,fill:'#1f120d'},bg);
+el('rect',{x:0,y:252,width:1000,height:388,fill:'#6d4632'},bg);
+el('rect',{x:0,y:252,width:1000,height:8,fill:'#8b5e45'},bg);
+el('rect',{x:16,y:270,width:212,height:356,rx:12,fill:'#3a251c'},bg);
+el('text',{x:32,y:298,'font-size':15,'font-weight':700,fill:'#ffc24b'},bg,'TOPPINGS');
+el('rect',{x:244,y:270,width:330,height:356,rx:12,fill:'#a97c56'},bg);
+el('rect',{x:252,y:278,width:314,height:340,rx:8,fill:'#bb8f68'},bg);
+el('rect',{x:590,y:270,width:394,height:356,rx:12,fill:'#3a251c'},bg);
+el('text',{x:606,y:298,'font-size':15,'font-weight':700,fill:'#ffc24b'},bg,'PASS TRAY');
+
+const hud=el('g',{},svg);
+const hudNight=el('text',{x:18,y:32,'font-size':21,'font-weight':700,fill:'#ffc24b'},hud);
+const hudClock=el('text',{x:215,y:32,'font-size':19,'font-weight':600,fill:'#fff4e3'},hud);
+const hudCash=el('text',{x:440,y:32,'font-size':21,'font-weight':700,fill:'#7fe39b'},hud);
+const hudStreak=el('text',{x:590,y:32,'font-size':16,fill:'#ffc24b'},hud);
+const hudRep=el('text',{x:982,y:32,'text-anchor':'end','font-size':23,fill:'#ffc24b'},hud);
+const hudPause=el('text',{x:760,y:32,'font-size':13,fill:'#d0b8a0'},hud,'Esc = pause');
+const gTickets=el('g',{},svg),gOvens=el('g',{},svg),gTop=el('g',{},svg),gBoard=el('g',{},svg),gTray=el('g',{},svg),gBadges=el('g',{},svg);
+const msgText=el('text',{x:409,y:300,'text-anchor':'middle','font-size':17,'font-weight':700,fill:'#2a1a14'},svg);
+
+/* ---------- State ---------- */
+let S;
+function newGame(diff){
+  S={mode:'menu',diff:diff||'medium',night:1,t:0,cash:0,rep:5,streak:0,total:0,board:{},tray:null,customers:Array(SLOTS).fill(null),
+     ovens:[null,null,null],spawn:2,bakeLvl:0,seatLvl:0,msg:'',msgT:0,
+     stats:{served:0,left:0,wrong:0,burnt:0,earned:0},servedAll:0,nextFace:0};
+  renderAll();
+}
+const bakeTime=()=>8-S.bakeLvl*1.5;
+const D=()=>DIFFS[S.diff];
+const windowTime=()=>D().window;
+const patience=()=>Math.max(11,36-3*S.night)*D().patience+S.seatLvl*4;
+const unlocked=()=>TKEYS.filter(k=>TOPPINGS[k].night<=S.night);
+const rent=()=>Math.round((10+10*S.night+S.night*S.night)*D().rent);
+const count=z=>{let n=0;for(const k in z)n+=z[k];return n;};
+const same=(a,b)=>TKEYS.every(k=>(a[k]||0)===(b[k]||0));
+function ovenState(o){return o.t<bakeTime()?'baking':o.t<bakeTime()+windowTime()?'ready':'burnt';}
+function say(m,good){S.msg=m;S.msgT=1.8;msgText.textContent=m;msgText.setAttribute('fill',good===false?'#8c1209':good?'#14592a':'#2a1a14');}
+
+const FACES=['#f1c9a5','#8d5a3a','#e0ac7e','#c68e5f','#f6d7bd','#6e4630'];
+const HAIR=['#2b1b12','#7a4a1f','#c9a15a','#1a1a1a','#a33c2a','#6b6b6b'];
+function makeOrder(){
+  const av=unlocked(),order={};
+  const kinds=Math.min(av.length,1+Math.floor(Math.random()*Math.min(3,1+Math.floor(S.night/2)+1)));
+  const pool=[...av].sort(()=>Math.random()-.5).slice(0,kinds);
+  for(const k of pool)order[k]=(S.night>=2&&Math.random()<.22)?2:1;
+  return order;
+}
+function spawnCustomer(){
+  const free=S.customers.map((c,i)=>c?-1:i).filter(i=>i>=0);
+  if(!free.length)return false;
+  const i=pick(free),p=patience();
+  S.nextFace++;
+  S.customers[i]={order:makeOrder(),left:p,max:p,face:pick(FACES),hair:pick(HAIR),mood:2};
+  renderTickets();
+  return true;
+}
+
+/* ---------- Actions ---------- */
+function addTopping(k){
+  if(TOPPINGS[k].night>S.night){say(`${TOPPINGS[k].name} unlocks on night ${TOPPINGS[k].night}.`,false);return;}
+  if(count(S.board)>=6){say('That pizza is full!',false);return;}
+  S.board[k]=(S.board[k]||0)+1;renderBoard();
+}
+function bake(){
+  if(!count(S.board)){say('Add toppings first.',false);return;}
+  const i=S.ovens.findIndex(o=>!o);
+  if(i<0){say('All ovens are full!',false);return;}
+  S.ovens[i]={toppings:S.board,t:0,shown:''};S.board={};
+  renderBoard();renderOvens();
+}
+function pullOven(i){
+  if(i>=S.ovens.length){say('You don\'t own that oven yet.',false);return;}
+  const o=S.ovens[i];
+  if(!o){say('That oven is empty.',false);return;}
+  const st=ovenState(o);
+  if(st==='baking'){say('Not ready yet!',false);return;}
+  if(st==='burnt'){
+    S.ovens[i]=null;S.cash-=2;S.stats.burnt++;S.streak=0;say('Burnt pizza binned: −$2',false);renderOvens();return;
+  }
+  if(S.tray){say('The tray is full. Serve it or press X.',false);return;}
+  S.tray=o.toppings;S.ovens[i]=null;renderOvens();renderTray();
+}
+function serve(i){
+  if(!S.tray){say('The tray is empty.',false);return;}
+  const c=S.customers[i];
+  if(!c){say('Nobody is at that ticket.',false);return;}
+  if(same(S.tray,c.order)){
+    const base=6+1.5*count(c.order),tip=5*c.left/c.max,bonus=Math.min(S.streak,6)*.5;
+    const pay=Math.round(base+tip+bonus);
+    S.cash+=pay;S.total+=pay;S.stats.earned+=pay;S.stats.served++;S.servedAll++;S.streak++;
+    S.customers[i]=null;S.tray=null;
+    if(S.streak%8===0&&S.rep<5){S.rep++;say(`+$${pay}. Great streak: +1 star!`,true);}
+    else say(`Served! +$${pay}`,true);
+  }else{
+    S.tray=null;S.rep--;S.streak=0;S.stats.wrong++;c.left=Math.max(1,c.left-8);
+    say('Wrong order! −1 star',false);
+  }
+  renderTickets();renderTray();renderHud();
+  checkLost();
+}
+function trash(){
+  if(!S.tray){say('The tray is empty.',false);return;}
+  S.tray=null;S.cash-=2;S.streak=0;say('Pizza binned: −$2',false);renderTray();
+}
+function clearBoard(){
+  if(!count(S.board))return;
+  S.board={};say('Board cleared.');renderBoard();
+}
+
+/* ---------- Simulation ---------- */
+function step(dt){
+  S.t+=dt;
+  if(S.msgT>0){S.msgT-=dt;if(S.msgT<=0){S.msg='';msgText.textContent='';}}
+  if(S.t<LEN){
+    S.spawn-=dt;
+    if(S.spawn<=0){
+      const f=S.t/LEN,rush=f>.3&&f<.65?.6:1;
+      if(spawnCustomer())S.spawn=Math.max(2,8.4-.8*S.night)*D().spawn*rush*rand(.8,1.2);
+      else S.spawn=.5;
+    }
+  }
+  for(let i=0;i<SLOTS;i++){
+    const c=S.customers[i];if(!c)continue;
+    c.left-=dt;
+    if(c.left<=0){
+      S.customers[i]=null;S.rep--;S.streak=0;S.stats.left++;
+      say('A customer stormed out! −1 star',false);renderTickets();renderHud();
+    }
+  }
+  S.ovens.forEach((o,i)=>{
+    if(!o)return;
+    o.t+=dt;
+    const st=ovenState(o);
+    if(st!==o.shown)renderOvens();
+  });
+  if(checkLost())return;
+  if(S.t>=LEN&&S.customers.every(c=>!c))endNight();
+}
+function checkLost(){
+  if(S.rep>0)return false;
+  const best=Math.max(readBest(S.diff),S.total);saveBest(S.diff,best);
+  S.mode='over';
+  showBox(`<h2>Closed for good</h2>
+    <p>Your reputation hit zero stars, so the shutters are coming down.</p>
+    <table><tr><td>Nights survived</td><td class="r">${S.night-1}</td></tr>
+    <tr><td>Pizzas served</td><td class="r">${S.servedAll}</td></tr>
+    <tr><td>Total earned</td><td class="r">$${S.total}</td></tr>
+    <tr><td>Best ever</td><td class="r">$${best}</td></tr></table>
+    ${replayHtml()}`);
+  return true;
+}
+function endNight(){
+  const r=rent();S.cash-=r;
+  S.board={};S.tray=null;S.ovens=S.ovens.map(()=>null);
+  if(S.cash<0){
+    S.mode='over';
+    const best=Math.max(readBest(S.diff),S.total);saveBest(S.diff,best);
+    showBox(`<h2>Out of money</h2><p>You couldn't cover tonight's $${r} rent.</p>
+      <table><tr><td>Nights survived</td><td class="r">${S.night-1}</td></tr>
+      <tr><td>Pizzas served</td><td class="r">${S.servedAll}</td></tr>
+      <tr><td>Best ever</td><td class="r">$${best}</td></tr></table>
+      ${replayHtml()}`);
+    return;
+  }
+  S.mode='shop';S.lastRent=r;renderAll();renderShop();
+}
+function shopItems(){
+  return [
+    {name:'Hotter ovens',desc:`Bake in ${(bakeTime()-1.5).toFixed(1)}s instead of ${bakeTime().toFixed(1)}s`,cost:40*(S.bakeLvl+1),can:S.bakeLvl<3,buy(){S.bakeLvl++}},
+    {name:'Fourth oven',desc:'Unlocks the R oven',cost:80,can:S.ovens.length<4,buy(){S.ovens.push(null)}},
+    {name:'Cozier seats',desc:'Customers wait 4s longer',cost:35*(S.seatLvl+1),can:S.seatLvl<3,buy(){S.seatLvl++}},
+    {name:'Local ad',desc:'Win back 1 star',cost:30,can:S.rep<5,buy(){S.rep++}}
+  ];
+}
+function renderShop(){
+  const s=S.stats;
+  const rows=shopItems().map((it,i)=>{
+    const ok=it.can&&S.cash>=it.cost;
+    return `<tr class="${ok?'':'off'}"><td><kbd>${i+1}</kbd> <b>${it.name}</b><br><small>${it.desc}</small></td><td class="r price">${it.can?'$'+it.cost:'Done'}</td></tr>`;
+  }).join('');
+  const nextNew=TKEYS.find(k=>TOPPINGS[k].night===S.night+1);
+  showBox(`<h2>Night ${S.night} is over</h2>
+    <table><tr><td>Pizzas served</td><td class="r">${s.served}</td></tr>
+    <tr><td>Customers lost / wrong orders / burnt</td><td class="r">${s.left} / ${s.wrong} / ${s.burnt}</td></tr>
+    <tr><td>Takings</td><td class="r">$${s.earned}</td></tr>
+    <tr><td>Rent</td><td class="r">−$${S.lastRent}</td></tr>
+    <tr><td><b>Cash</b></td><td class="r"><b>$${S.cash}</b></td></tr></table>
+    <h2 style="font-size:18px;margin-top:14px">Spend your cash</h2>
+    <table>${rows}</table>
+    ${nextNew?`<p>Tomorrow's new topping: <b>${TOPPINGS[nextNew].name}</b> (<kbd>${nextNew.toUpperCase()}</kbd>).</p>`:''}
+    ${S.diff==='medium'&&S.night===HINT_LAST_NIGHT?'<p><b>From tomorrow, pizzas no longer show seat numbers.</b> Match them to tickets yourself.</p>':''}
+    <div class="go">Press <kbd>Enter</kbd> to start night ${S.night+1}</div>`);
+}
+function nextNight(){
+  S.night++;S.t=0;S.spawn=2;S.streak=0;S.stats={served:0,left:0,wrong:0,burnt:0,earned:0};
+  S.customers=Array(SLOTS).fill(null);S.mode='play';hideBox();renderAll();
+}
+
+/* ---------- Input (keyboard only) ---------- */
+function press(key){
+  const k=key.length===1?key.toLowerCase():key;
+  if(S.mode==='menu'||S.mode==='over'){
+    const picked=DIFF_KEYS[+k-1];
+    const diff=k.length===1&&picked?picked:(S.mode==='over'&&k==='Enter'?S.diff:null);
+    if(diff){newGame(diff);S.mode='play';hideBox();renderAll();}
+    return true;
+  }
+  if(S.mode==='pause'){if(k==='Escape'||k==='Enter'){S.mode='play';hideBox();}return true;}
+  if(S.mode==='shop'){
+    if(k==='Enter'){nextNight();return true;}
+    const n=+k-1,items=shopItems();
+    if(n>=0&&n<items.length){const it=items[n];if(it.can&&S.cash>=it.cost){S.cash-=it.cost;it.buy();renderHud();renderOvens();renderShop();}}
+    return true;
+  }
+  if(k==='Escape'){pause();return true;}
+  if(TOPPINGS[k]){addTopping(k);return true;}
+  if(k===' '){bake();return true;}
+  if(k==='Backspace'){clearBoard();return true;}
+  if(k==='x'){trash();return true;}
+  const ov=OVEN_KEYS.indexOf(k);
+  if(ov>=0){pullOven(ov);return true;}
+  if(k>='1'&&k<='4'&&k.length===1){serve(+k-1);return true;}
+  return false;
+}
+function pause(){
+  S.mode='pause';
+  showBox(`<h2>Paused</h2>${controlsHtml()}<div class="go">Press <kbd>Esc</kbd> to keep cooking</div>`);
+}
+addEventListener('keydown',e=>{
+  if(e.repeat){if([' ','Backspace'].includes(e.key))e.preventDefault();return;}
+  if(e.ctrlKey||e.metaKey||e.altKey)return;
+  if(press(e.key))e.preventDefault();
+});
+addEventListener('blur',()=>{if(S&&S.mode==='play')pause();});
+
+/* ---------- Rendering ---------- */
+function showBox(html){$('box').innerHTML=html;$('back').style.display='flex';}
+function hideBox(){$('back').style.display='none';}
+function modesHtml(){
+  return `<table>${DIFF_KEYS.map((d,i)=>{
+    const best=readBest(d);
+    return `<tr><td><kbd>${i+1}</kbd> <b>${DIFFS[d].name}</b><br><small>${DIFFS[d].desc}</small></td><td class="r price">${best?'Best $'+best:''}</td></tr>`;
+  }).join('')}</table>`;
+}
+function replayHtml(){
+  return `${modesHtml()}<div class="go">Press <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> to pick a mode, or <kbd>Enter</kbd> to replay ${D().name}</div>`;
+}
+function controlsHtml(){
+  return `<table>
+    <tr><td><kbd>P</kbd> <kbd>M</kbd> <kbd>O</kbd> and more</td><td class="r">Add a topping</td></tr>
+    <tr><td><kbd>Space</kbd></td><td class="r">Put the pizza in the oven</td></tr>
+    <tr><td><kbd>Q</kbd> <kbd>W</kbd> <kbd>E</kbd> <kbd>R</kbd></td><td class="r">Take it out when READY</td></tr>
+    <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></td><td class="r">Serve that ticket</td></tr>
+    <tr><td><kbd>Backspace</kbd> / <kbd>X</kbd></td><td class="r">Clear the board / bin the tray</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td class="r">Pause</td></tr></table>`;
+}
+function renderHud(){
+  hudNight.textContent=`Night ${S.night} · ${D().name}`;
+  const f=Math.min(1,S.t/LEN),mins=Math.floor(f*240),h=6+Math.floor(mins/60),m=Math.floor(mins%60/10)*10;
+  hudClock.textContent=S.t>=LEN?'Closing: finish up!':`${h}:${String(m).padStart(2,'0')} pm`;
+  hudCash.textContent=(S.cash<0?'−$':'$')+Math.abs(S.cash);
+  hudStreak.textContent=S.streak>=2?`🔥 ${S.streak} in a row`:'';
+  hudRep.textContent='★'.repeat(Math.max(0,S.rep))+'☆'.repeat(5-Math.max(0,S.rep));
+}
+const barRefs=[];
+function renderTickets(){
+  gTickets.innerHTML='';barRefs.length=0;
+  for(let i=0;i<SLOTS;i++){
+    const x=14+i*163,y=58,c=S.customers[i];
+    const g=el('g',{},gTickets);
+    if(!c){
+      el('rect',{x,y,width:153,height:186,rx:9,fill:'#00000024',stroke:'#ffffff1a'},g);
+      el('text',{x:x+76,y:y+98,'text-anchor':'middle','font-size':13,fill:'#ffffff55'},g,'empty seat');
+      el('text',{x:x+14,y:y+24,'font-size':15,'font-weight':700,fill:'#ffffff55'},g,String(i+1));
+      continue;
+    }
+    el('rect',{x,y,width:153,height:186,rx:9,fill:'#fff8ea',stroke:'#c9b28f'},g);
+    keycap(g,x+8,y+8,String(i+1));
+    const cx=x+116,cy=y+36;
+    el('path',{d:`M${cx-21} ${cy+7}a21 21 0 0 1 42 0z`,fill:c.hair},g);
+    el('circle',{cx,cy:cy+6,r:19,fill:c.face},g);
+    el('circle',{cx:cx-7,cy:cy+2,r:2.2,fill:'#1a1a1a'},g);
+    el('circle',{cx:cx+7,cy:cy+2,r:2.2,fill:'#1a1a1a'},g);
+    const mouth=el('path',{fill:'none',stroke:'#1a1a1a','stroke-width':2,'stroke-linecap':'round'},g);
+    el('rect',{x:x+8,y:y+66,width:137,height:9,rx:4,fill:'#e1d4bf'},g);
+    const bar=el('rect',{x:x+8,y:y+66,width:137,height:9,rx:4,fill:'#58c97a'},g);
+    barRefs.push({bar,mouth,c,cx,cy});
+    let row=0;
+    for(const k of TKEYS){
+      const n=c.order[k];if(!n)continue;
+      const ry=y+83+row*33;
+      if(n>1){
+        el('rect',{x:x+3,y:ry,width:147,height:29,rx:6,fill:'#ffdf8f'},g);
+        el('rect',{x:x+6,y:ry+3,width:30,height:23,rx:5,fill:'#c8251a'},g);
+        el('text',{x:x+21,y:ry+20,'text-anchor':'middle','font-size':16,'font-weight':800,fill:'#fff'},g,'×'+n);
+        el('text',{x:x+41,y:ry+19,'font-size':14,'font-weight':700,fill:'#2a1a14'},g,TOPPINGS[k].name);
+      }else{
+        TOPPINGS[k].draw(g,x+22,ry+14,1);
+        el('text',{x:x+38,y:ry+19,'font-size':14,'font-weight':600,fill:'#2a1a14'},g,TOPPINGS[k].name);
+      }
+      el('rect',{x:x+121,y:ry+3,width:24,height:22,rx:4,fill:'#2a1a14'},g);
+      el('text',{x:x+133,y:ry+19,'text-anchor':'middle','font-size':13,'font-weight':700,fill:'#fff4e3'},g,k.toUpperCase());
+      row++;
+    }
+  }
+  updateBars();
+}
+function updateBars(){
+  for(const r of barRefs){
+    const f=Math.max(0,r.c.left/r.c.max);
+    r.bar.setAttribute('width',137*f);
+    r.bar.setAttribute('fill',f>.5?'#58c97a':f>.25?'#e8a020':'#d8392b');
+    const o=f>.5?5:f>.25?0:-5,x=r.cx,y=r.cy+15-o/2;
+    r.mouth.setAttribute('d',`M${x-6} ${y}Q${x} ${y+o} ${x+6} ${y}`);
+  }
+}
+const ovenBars=[];
+function renderOvens(){
+  gOvens.innerHTML='';ovenBars.length=0;
+  S.ovens.forEach((o,i)=>{
+    const x=668+(i%2)*162,y=58+Math.floor(i/2)*96,w=154,h=90;
+    const g=el('g',{},gOvens);
+    el('rect',{x,y,width:w,height:h,rx:9,fill:'#23201f',stroke:'#55504c','stroke-width':2},g);
+    el('rect',{x:x+42,y:y+8,width:104,height:74,rx:6,fill:o?'#5a2410':'#2e2a28'},g);
+    keycap(g,x+8,y+8,OVEN_KEYS[i].toUpperCase());
+    if(!o){el('text',{x:x+94,y:y+50,'text-anchor':'middle','font-size':13,fill:'#8a837d'},g,'empty');return;}
+    const st=ovenState(o);o.shown=st;
+    drawPizza(g,x+94,y+38,26,o.toppings,st);
+    const label={baking:'',ready:'READY',burnt:'BURNT'}[st];
+    if(label){
+      el('rect',{x:x+4,y:y+42,width:36,height:18,rx:4,fill:st==='ready'?'#58c97a':'#d8392b'},g);
+      el('text',{x:x+22,y:y+55,'text-anchor':'middle','font-size':10,'font-weight':800,fill:'#10100f'},g,label);
+    }
+    el('rect',{x:x+6,y:y+72,width:32,height:8,rx:3,fill:'#444'},g);
+    const bar=el('rect',{x:x+6,y:y+72,width:0,height:8,rx:3,fill:'#e8a020'},g);
+    ovenBars.push({bar,o});
+  });
+}
+function updateOvenBars(){
+  for(const r of ovenBars){
+    const st=ovenState(r.o);let f=0,color='#e8a020';
+    if(st==='baking')f=r.o.t/bakeTime();
+    else if(st==='ready'){f=1-(r.o.t-bakeTime())/windowTime();color='#58c97a';}
+    else {f=1;color='#d8392b';}
+    r.bar.setAttribute('width',32*f);r.bar.setAttribute('fill',color);
+  }
+}
+function renderToppings(){
+  gTop.innerHTML='';
+  TKEYS.forEach((k,i)=>{
+    const t=TOPPINGS[k],y=312+i*51,open=t.night<=S.night;
+    const g=el('g',{opacity:open?1:.38},gTop);
+    keycap(g,32,y,k.toUpperCase(),30);
+    el('circle',{cx:86,cy:y+13,r:15,fill:'#f7e7c4'},g);
+    t.draw(g,86,y+13,1.3);
+    el('text',{x:106,y:y+19,'font-size':15,'font-weight':600,fill:'#fff4e3'},g,open?t.name:`Night ${t.night}`);
+  });
+}
+function renderBoard(){
+  gBoard.innerHTML='';
+  drawPizza(gBoard,409,458,118,S.board,'raw');
+  TKEYS.forEach((k,i)=>{
+    const n=S.board[k];if(!n)return;
+    const y=312+i*51;
+    el('rect',{x:180,y:y+1,width:40,height:25,rx:6,fill:'#ffc24b'},gBoard);
+    el('text',{x:200,y:y+20,'text-anchor':'middle','font-size':17,'font-weight':800,fill:'#2a1a14'},gBoard,'×'+n);
+  });
+  keycap(gBoard,296,590,'Space',66);
+  el('text',{x:370,y:609,'font-size':14,'font-weight':700,fill:'#2a1a14'},gBoard,'bake');
+  keycap(gBoard,421,590,'⌫',32);
+  el('text',{x:460,y:609,'font-size':14,'font-weight':700,fill:'#2a1a14'},gBoard,'clear');
+}
+function renderTray(){
+  gTray.innerHTML='';
+  const cx=787,cy=420;
+  el('circle',{cx,cy,r:92,fill:'#23201f',stroke:'#55504c','stroke-width':3},gTray);
+  if(S.tray)drawPizza(gTray,cx,cy,80,S.tray,'ready');
+  else el('text',{x:cx,y:cy+5,'text-anchor':'middle','font-size':15,fill:'#8a837d'},gTray,'empty');
+  const list=S.tray?TKEYS.filter(k=>S.tray[k]).map(k=>TOPPINGS[k].name+(S.tray[k]>1?' ×2':'')).join(', '):'';
+  el('text',{x:cx,y:316,'text-anchor':'middle','font-size':16,'font-weight':700,fill:'#ffc24b'},gTray,list);
+  keycap(gTray,650,576,'1–4',44);
+  el('text',{x:700,y:595,'font-size':14,fill:'#fff4e3'},gTray,'serve ticket');
+  keycap(gTray,815,576,'X');
+  el('text',{x:848,y:595,'font-size':14,fill:'#fff4e3'},gTray,'bin (−$2)');
+}
+function renderAll(){renderHud();renderTickets();renderOvens();renderToppings();renderBoard();renderTray();}
+
+/* ---------- Seat numbers on pizzas ---------- */
+const HINT_LAST_NIGHT=10;
+function seatHintsOn(){
+  return S.diff==='easy'||(S.diff==='medium'&&S.night<=HINT_LAST_NIGHT);
+}
+function seatHints(){
+  if(!seatHintsOn())return [];
+  // Most impatient customer is matched first, and each customer gets only one pizza.
+  const waiting=S.customers.map((c,i)=>({c,i})).filter(x=>x.c).sort((a,b)=>a.c.left-b.c.left);
+  const out=[];
+  const claim=(toppings,x,y,r)=>{
+    const n=waiting.findIndex(w=>same(w.c.order,toppings));
+    if(n<0)return;
+    out.push({seat:waiting[n].i+1,x,y,r});
+    waiting.splice(n,1);
+  };
+  if(S.tray)claim(S.tray,849,358,13);
+  S.ovens.map((o,i)=>({o,i})).filter(v=>v.o&&ovenState(v.o)!=='burnt').sort((a,b)=>b.o.t-a.o.t).forEach(({o,i})=>{
+    claim(o.toppings,668+(i%2)*162+118,58+Math.floor(i/2)*96+16,10);
+  });
+  if(count(S.board))claim(S.board,499,368,14);
+  return out;
+}
+let badgeSig='';
+function updateBadges(){
+  const hints=seatHints(),sig=hints.map(h=>[h.seat,h.x,h.y].join()).join('|');
+  if(sig===badgeSig)return;
+  badgeSig=sig;gBadges.innerHTML='';
+  for(const h of hints){
+    el('circle',{cx:h.x,cy:h.y,r:h.r,fill:'#fff4e3',stroke:'#2a1a14','stroke-width':2},gBadges);
+    el('text',{x:h.x,y:h.y+h.r*.42,'text-anchor':'middle','font-size':h.r*1.25,'font-weight':800,fill:'#2a1a14'},gBadges,String(h.seat));
+  }
+}
+
+/* ---------- Loop ---------- */
+let last=performance.now(),hudT=0;
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  if(S.mode==='play')step(dt);
+  updateBars();updateOvenBars();updateBadges();
+  hudT+=dt;if(hudT>.2){hudT=0;renderHud();}
+  requestAnimationFrame(frame);
+}
+
+newGame();
+showBox(`<h2>🍕 Pizza Night</h2>
+  <p>Your pizzeria opens tonight, and you can run the whole kitchen from your keyboard. Every pizza already has sauce and cheese, so you only add the toppings on the ticket.</p>
+  ${controlsHtml()}
+  <p>Take pizzas out while they say READY, or they burn. Customers who wait too long or get the wrong order cost you a star. Lose all 5 and you close for good.</p>
+  ${modesHtml()}
+  <div class="go">Press <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> to pick a mode and open the doors</div>`);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
